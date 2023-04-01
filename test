@@ -1,0 +1,950 @@
+using System;
+
+namespace HyperElk.Core
+{
+    #region constants
+    public sealed class Constants
+    {
+        public Constants()
+        {
+            throw new Exception("Not allowed to create an instance of this Object");
+        }
+
+        public const int Range = 40;
+    }
+    #endregion
+
+    #region setting classes
+    public class SettingsCategory
+    {
+        public string Name { get; private set; }
+
+        public SettingsCategory(string name)
+        {
+            Name = name;
+        }
+    }
+
+    public abstract class Setting<T>
+    {
+        private static readonly SettingsCategory noCategory = new SettingsCategory("General");
+
+        public SettingsCategory Category { get; protected set; } = noCategory;
+
+        public string Description { get; protected set; } = "";
+
+        public string DisplayName { get; protected set; } = "";
+
+        public string Id { get; protected set; } = "";
+
+        public abstract T Value();
+    }
+
+    public class SettingBool : Setting<bool>
+    {
+        public bool DefaultValue { get; private set; }
+
+        public SettingBool(string id, string displayName, bool value, string description, SettingsCategory category)
+        {
+            Id = id;
+            DisplayName = displayName;
+            DefaultValue = value;
+            Description = description;
+            Category = category;
+        }
+
+        public override bool Value() { return (bool)CombatRoutine.GetProperty(Id); }
+    }
+
+    public class SettingStrings : Setting<string>
+    {
+        public string[] Values { get; private set; }
+
+        public SettingStrings(string id, string displayName, string[] values, string description, in SettingsCategory category)
+        {
+            Id = id;
+            DisplayName = displayName;
+            Values = values;
+            Description = description;
+            Category = category;
+        }
+        
+        public override string Value() { return Values[(int)CombatRoutine.GetProperty(Id)]; }
+    }
+    #endregion
+
+    #region toggle class
+    public class Toggle
+    {
+        public string Name { get; private set; }
+
+        public bool Toggled { get { return API.ToggleIsEnabled(Name); } }
+
+        public Toggle(string name)
+        {
+            Name = name;
+        }
+    }
+    #endregion
+
+    #region unit npc classes
+    public class Unit
+    {
+        private static int DPSSpecc { get { return API.DamagerRole; } }
+
+        private static int HealerSpecc { get { return API.HealerRole; } }
+
+        public static bool IgnoreTarget
+        {
+            get
+            {
+                foreach (NPC npc in Main.npcs)
+                {
+                    if (!npc.Ignore) continue;
+
+                    if (TargetId == npc.Id) return true;
+                }
+
+                foreach (Debuff debuff in Main.debuffs)
+                {
+                    if (!debuff.Ignore) continue;
+
+                    if (Main.target.HasAura(debuff)) return true;
+                }
+
+                return false;
+            }
+        }
+
+        public static int MouseoverId { get { return API.MouseoverGUIDNPCID; } }
+
+        private static readonly Unit noUnit = new Unit("none");
+
+        public static int PlayerComboPoints { get { return API.PlayerComboPoints; } }
+
+        public static bool PlayerInCombat { get { return API.PlayerIsInCombat; } }
+
+        public static bool PlayerInRaid { get { return API.PlayerIsInRaid; } }
+
+        public static int PlayerMana { get { return API.PlayerMana; } }
+
+        public static bool PlayerMoving { get { return API.PlayerIsMoving; } }
+
+        public static bool PlayerRooted { get { return API.PlayerIsCC(CCList.ROOT); } }
+
+        private static readonly Func<Unit, bool> standartCondition = unit => true;
+
+        public static Unit Tank
+        {
+            get
+            {
+                foreach (Unit unit in Main.units)
+                {
+                    if (unit.Id.Equals(Main.player.Id)) continue;
+
+                    if (unit.HP > 0)
+                    {
+                        if (unit.Specc == TankSpecc) { return unit; }
+                    }
+                }
+
+                return Main.player;
+            }
+        }
+
+        private static int TankSpecc { get { return API.TankRole; } }
+
+        public static int TargetId { get { return API.TargetGUIDNPCID; } }
+
+        public int CurrentSpell { get { return API.CurrentCastSpellID(Id); } }
+
+        public int CurrentSpellRemaining { get { return API.UnitCurrentCastTimeRemaining(Id); } }
+
+        public bool Dispel
+        {
+            get
+            {
+                foreach (Debuff debuff in Main.debuffs)
+                {
+                    if (!debuff.Dispel) continue;
+
+                    if (HasAura(debuff, false))
+                    {
+                        if (debuff.Elapsed(this, false) > 20 && (debuff.DispelRemaining == 0 || debuff.DispelRemaining > debuff.Remaining(this, false)))
+                        {
+                            if (debuff.MinStacksDispel == 0 || debuff.Stacks(this) >= debuff.MinStacksDispel) return true;
+                        }
+                    }
+                }
+
+                return false;
+            }
+        }
+
+        public bool Enraged
+        {
+            get
+            {
+                foreach (Buff buff in Main.buffs)
+                {
+                    if (!buff.Enrage) continue;
+
+                    if (HasAura(buff)) return true;
+                }
+
+                return false;
+            }
+        }
+
+        public int HP { get { return (int)Math.Ceiling(API.UnitHealthPercent(Id) * Multiplier); } }
+
+        public string Id { get; private set; }
+
+        public bool Immune
+        {
+            get
+            {
+                foreach (Buff buff in Main.buffs)
+                {
+                    if (!buff.Immunity) continue;
+
+                    if (HasAura(buff)) return true;
+                }
+
+                return false;
+            }
+        }
+
+        public double Multiplier
+        {
+            get
+            {
+                double multiplier = 1;
+
+                if (Specc == TankSpecc) multiplier *= 1.1;
+
+                foreach (Mechanic mechanic in Main.mechanics)
+                {
+                    if (mechanic.Multiplier == 1) continue;
+
+                    if (mechanic.MSpell != null)
+                    {
+                        foreach (Unit unit in Main.enemyUnits)
+                        {
+                            if (unit.CurrentSpell == mechanic.MSpell.Id)
+                            {
+                                if (mechanic.MSpell.Targeted)
+                                {
+                                    if (Id != "player") continue;
+                                    if (!TargetingPlayer) continue;
+                                }
+                                multiplier *= mechanic.Multiplier;
+                                break;
+                            }
+                        }
+                    }
+                    else if (mechanic.MDebuff != null)
+                    {
+                        if (HasAura(mechanic.MDebuff)) multiplier *= mechanic.Multiplier;
+                    }
+                    else if (mechanic.MBuff != null)
+                    {
+                        if (mechanic.OnEnemy)
+                        {
+                            foreach (Unit unit in Main.enemyUnits)
+                            {
+                                if (unit.HasAura(mechanic.MBuff))
+                                {
+                                    multiplier *= mechanic.Multiplier;
+                                    break;
+                                }
+                            }
+                        }
+                        else
+                        {
+                            if (HasAura(mechanic.MBuff)) multiplier *= mechanic.Multiplier;
+                        }
+                    }
+                }
+
+                return multiplier;
+            }
+        }
+
+        public int Range { get { return API.UnitRange(Id); } }
+
+        private int Specc { get { return API.UnitRoleSpec(Id); } }
+
+        public bool TargetingPlayer { get { return API.PlayerIsUnitTarget(Id); } }
+
+        public Unit(string id)
+        {
+            Id = id;
+        }
+
+        public void Focus() { API.CastSpell(Id); }
+
+        public bool HasAura(in Buff aura, bool playerIsSrc = false) { return API.UnitHasBuff(aura.Name, Id, playerIsSrc); }
+
+        public bool HasAura(in Debuff aura, bool playerIsSrc = true) { return API.UnitHasDebuff(aura.Name, Id, playerIsSrc, false); }
+
+        public static int InRange(bool melee = false)
+        {
+            if (melee) return API.PlayerUnitInMeleeRangeCount;
+            else return API.TargetUnitInRangeCount;
+        }
+
+        public static Unit LowestUnit(Func<Unit, bool>? condition = null, int range = Constants.Range)
+        {
+            {
+                condition ??= standartCondition;
+
+                int lowestHealth = 101;
+                Unit lowestUnit = noUnit;
+                int i = 0;
+
+                foreach (Unit unit in Main.units)
+                {
+                    i++;
+
+                    if (!PlayerInRaid && i > 5) break;
+
+                    if (unit.HP > 0 && unit.Range <= range && condition(unit))
+                    {
+                        if (unit.HP < lowestHealth) { lowestHealth = unit.HP; lowestUnit = unit; }
+                    }
+                }
+
+                return lowestUnit;
+            }
+        }
+
+        public static int UnitsFittingCondition(in Func<Unit, bool> condition, int range = Constants.Range)
+        {
+            int num = 0;
+            int i = 0;
+
+            foreach (Unit unit in Main.units)
+            {
+                i++;
+
+                if (!PlayerInRaid && i > 5) break;
+
+                if (unit.HP > 0 && unit.Range <= range && condition(unit))
+                {
+                    num++;
+                }
+            }
+
+            return num;
+        }
+    }
+
+    public class NPC
+    {
+        public int Id { get; private set; }
+
+        public bool Ignore { get; private set; }
+
+        public bool Priority { get; private set; }
+
+        public NPC(int id, bool priority = false, bool ignore = false)
+        {
+            Id = id;
+            Priority = priority;
+            Ignore = ignore;
+        }
+    }
+    #endregion
+
+    #region cast classes
+    public abstract class Cast
+    {
+        public static bool StopCast
+        {
+            get
+            {
+                foreach (Mechanic mechanic in Main.mechanics)
+                {
+                    if (!mechanic.IsInterrupt) continue;
+
+                    if (mechanic.MSpell != null)
+                    {
+                        foreach (Unit unit in Main.enemyUnits)
+                        {
+                            if (unit.CurrentSpell == mechanic.MSpell.Id && unit.CurrentSpellRemaining <= Main.player.CurrentSpellRemaining) return true;
+                        }
+                    }
+
+                    if (mechanic.MDebuff == null) continue;
+
+                    if (Main.player.HasAura(mechanic.MDebuff) && mechanic.MDebuff.Remaining(Main.player, false) <= Main.player.CurrentSpellRemaining) return true;
+                }
+
+                return false;
+            }
+        }
+
+        public static bool UseDeff
+        {
+            get
+            {
+                foreach (Mechanic mechanic in Main.mechanics)
+                {
+                    if (!mechanic.AutoDeff) continue;
+
+                    if (mechanic.MSpell != null)
+                    {
+                        foreach (Unit unit in Main.enemyUnits)
+                        {
+                            if (unit.CurrentSpell == mechanic.MSpell.Id && unit.CurrentSpellRemaining <= API.SpellGCDDuration + 50 && (!mechanic.MSpell.Targeted
+                                || unit.TargetingPlayer) && (!mechanic.MSpell.OnTank || Unit.Tank.Range <= mechanic.Range)) return true;
+                        }
+                    }
+
+                    if (mechanic.MDebuff == null) continue;
+
+                    if (mechanic.OnPlayer)
+                    {
+                        if (Main.player.HasAura(mechanic.MDebuff, false) && mechanic.MDebuff.Remaining(Main.player, false) <= API.SpellGCDTotalDuration + 50) return true;
+                    }
+                    else
+                    {
+                        foreach (Unit unit in Main.units)
+                        {
+                            if (unit.HasAura(mechanic.MDebuff, false) && mechanic.MDebuff.Remaining(unit, false) <= API.SpellGCDTotalDuration + 50 && unit.Range <= mechanic.Range)
+                                return true;
+                        }
+                    }
+                }
+
+                return false;
+            }
+        }
+
+        public string Name { get; protected set; } = "";
+
+        protected int Range { get; set; }
+
+        protected abstract bool InRange(in Unit unit);
+
+        public abstract bool Usable(in Unit unit);
+
+        public void Use() { API.CastSpell(Name); }
+    }
+
+    public class Spell : Cast
+    {
+        public bool CanCast { get { return API.CanCast(Name, false); } }
+
+        public int Id { get; private set; }
+
+        private bool NoCooldown { get { return API.SpellCDDuration(Name) - 40 <= 0; } }
+
+        public Spell(int id, string name, int range = Constants.Range)
+        {
+            Name = name;
+            Id = id;
+            Range = range;
+        }
+
+        private void CastAtFocus() { API.CastSpell(Name + " Focus"); }
+
+        public void FocusCast(Unit unit) { unit.Focus(); CastAtFocus(); }
+
+        protected override bool InRange(in Unit unit) { return unit.Range <= Range; }
+
+        public override bool Usable(in Unit unit) { return CanCast && NoCooldown && InRange(unit); }
+
+        public bool Usable(Unit unit, bool castableCheck) { return (CanCast || !castableCheck) && NoCooldown && InRange(unit); }
+    }
+
+    public class Macro : Cast
+    {
+        public string Text { get; private set; }
+
+        public Macro(string name, string text, int range = Constants.Range)
+        {
+            Name = name;
+            Text = text;
+            Range = range;
+        }
+
+        public Macro(string name, int range = Constants.Range)
+        {
+            Name = name;
+            Text = name;
+            Range = range;
+        }
+
+        protected override bool InRange(in Unit unit) { return unit.Range <= Range; }
+
+        public override bool Usable(in Unit unit) { return InRange(unit); }
+    }
+
+    public class Item : Cast
+    {
+        public bool CanCast { get { return API.PlayerItemCanUse(Name); } }
+
+        public int Id { get; protected set; }
+
+        public Item(int id, string name, int range = Constants.Range)
+        {
+            Id = id;
+            Name = name;
+            Range = range;
+        }
+
+        protected override bool InRange(in Unit unit) { return unit.Range <= Range; }
+
+        public override bool Usable(in Unit unit) { return CanCast && InRange(unit); }
+    }
+
+    public class Trinket : Cast
+    {
+        public bool CanCast { get { return API.PlayerTrinketRemainingCD(Id) == 0; } }
+
+        public int Id { get; private set; }
+
+        public Trinket(int id, int range = Constants.Range)
+        {
+            Id = id;
+            Name = "trinket" + id;
+            Range = range;
+        }
+
+        protected override bool InRange(in Unit unit) { return unit.Range <= Range; }
+
+        public override bool Usable(in Unit unit) { return API.PlayerTrinketIsUsable(Id) && CanCast && InRange(unit); }
+    }
+    #endregion
+
+    #region aura classes
+    public abstract class Aura
+    {
+        public int Id { get; protected set; }
+
+        public string Name { get; protected set; } = "";
+
+        private int refreshTime;
+
+        public int RefreshTime { get { return refreshTime; } protected set { refreshTime = value * 100; } }
+
+        public abstract int Elapsed(in Unit unit, bool playerIsSrc = false);
+
+        public abstract bool NeedRefresh(in Unit unit);
+
+        public abstract int Remaining(in Unit unit, bool playerIsSrc);
+
+        public abstract int Stacks(in Unit unit);
+    }
+
+    public class Buff : Aura
+    {
+        public bool Enrage { get; private set; }
+
+        public bool Immunity { get; private set; }
+
+        public Buff(int id, string name, int refreshTime = 0)
+        {
+            Name = name;
+            Id = id;
+            RefreshTime = refreshTime;
+        }
+
+        public Buff(int id, string name, bool immunity = false)
+        {
+            Name = name;
+            Id = id;
+            Immunity = immunity;
+        }
+
+        public Buff(int id, Spell spell, int refreshTime = 0)
+        {
+            Name = spell.Name;
+            Id = id;
+            RefreshTime = refreshTime;
+        }
+
+        public Buff(in Spell spell, int refreshTime = 0)
+        {
+            Name = spell.Name;
+            Id = spell.Id;
+            RefreshTime = refreshTime;
+        }
+
+        public override int Elapsed(in Unit unit, bool playerIsSrc = false) { return API.UnitBuffTimeElapsed(Name, unit.Id, playerIsSrc); }
+
+        public override bool NeedRefresh(in Unit unit) { return Remaining(unit, true) < RefreshTime; }
+
+        public override int Remaining(in Unit unit, bool playerIsSrc = false) { return API.UnitBuffTimeRemaining(Name, unit.Id, playerIsSrc); }
+
+        public override int Stacks(in Unit unit) { return API.UnitBuffStacks(Name, unit.Id); }
+    }
+
+    public class Debuff : Aura
+    {
+        public bool Dispel { get; private set; }
+
+        private int dispelRemaining;
+
+        public int DispelRemaining { get { return dispelRemaining; } protected set { dispelRemaining = (int)Math.Ceiling((double)value * 100); } }
+
+        public bool Ignore { get; private set; }
+
+        public int MinStacksDispel { get; private set; }
+
+        public Debuff(int id, string name, int refreshTime = 0)
+        {
+            Name = name;
+            Id = id;
+            RefreshTime = refreshTime;
+        }
+
+        public Debuff(int id, string name, bool ignore, bool dispel = false, int dispelRemaining = 0, int minStacksDispel = 0)
+        {
+            Name = name;
+            Id = id;
+            Ignore = ignore;
+            Dispel = dispel;
+            DispelRemaining = dispelRemaining;
+            MinStacksDispel = minStacksDispel;
+        }
+
+        public Debuff(int id, Spell spell, int refreshTime = 0)
+        {
+            Name = spell.Name;
+            Id = id;
+            RefreshTime = refreshTime;
+        }
+
+        public Debuff(in Spell spell, int refreshTime = 0)
+        {
+            Name = spell.Name;
+            Id = spell.Id;
+            RefreshTime = refreshTime;
+        }
+
+        public override int Elapsed(in Unit unit, bool playerIsSrc = true) { return API.UnitDebuffElapsedTime(Name, unit.Id, playerIsSrc); }
+
+        public override bool NeedRefresh(in Unit unit) { return Remaining(unit) < RefreshTime; }
+
+        public override int Remaining(in Unit unit, bool playerIsSrc = true) { return API.UnitDebuffRemainingTime(Name, unit.Id, playerIsSrc); }
+
+        public override int Stacks(in Unit unit) { return API.UnitDebuffStacks(Name, unit.Id); }
+    }
+    #endregion
+
+    #region talent class
+    public class Talent
+    {
+        private int Column { get; set; }
+
+        public bool IsSelected
+        {
+            get
+            {
+                return API.PlayerIsTalentSelected(Row, Column);
+            }
+        }
+
+        private int Row { get; set; }
+
+        public Talent(int row, int column)
+        {
+            Row = row;
+            Column = column;
+        }
+    }
+    #endregion
+
+    #region mechanic classes
+    public class Mechanic
+    {
+        public static bool InterruptIncomming
+        {
+            get
+            {
+                foreach (Mechanic mechanic in Main.mechanics)
+                {
+                    if (!mechanic.IsInterrupt) continue;
+
+                    if (mechanic.MSpell != null)
+                    {
+                        foreach (Unit unit in Main.enemyUnits)
+                        {
+                            if (unit.CurrentSpell == mechanic.MSpell.Id) return true;
+                        }
+                    }
+
+                    if (mechanic.MDebuff == null) continue;
+
+                    if (Main.player.HasAura(mechanic.MDebuff)) return true;
+                }
+
+                return false;
+            }
+        }
+
+        public bool AutoDeff { get; private set; }
+
+        public bool IsInterrupt { get; private set; }
+
+        public Buff? MBuff { get; private set; }
+
+        public Debuff? MDebuff { get; private set; }
+
+        public MechanicSpell? MSpell { get; private set; }
+
+        public double Multiplier { get; private set; } = 1;
+
+        public bool OnEnemy { get; private set; }
+
+        public bool OnPlayer { get; private set; }
+
+        public int Range { get; private set; }
+
+        public Mechanic(in MechanicSpell spell, bool autoDeff = false, bool isInterrupt = false, int range = 100)
+        {
+            MSpell = spell;
+            AutoDeff = autoDeff;
+            IsInterrupt = isInterrupt;
+            Range = range;
+        }
+
+        public Mechanic(in MechanicSpell spell, double multiplier)
+        {
+            MSpell = spell;
+            Multiplier = multiplier;
+        }
+
+        public Mechanic(in Debuff debuff, bool autoDeff, bool isInterrupt = false, bool onPlayer = false, double multiplier = 1, int range = 100)
+        {
+            MDebuff = debuff;
+            AutoDeff = autoDeff;
+            IsInterrupt = isInterrupt;
+            OnPlayer = onPlayer;
+            Range = range;
+            Multiplier = multiplier;
+        }
+
+        public Mechanic(in Debuff debuff, double multiplier)
+        {
+            MDebuff = debuff;
+            Multiplier = multiplier;
+        }
+
+        public Mechanic(in Buff buff, double multiplier, bool onEnemy = false)
+        {
+            MBuff = buff;
+            Multiplier = multiplier;
+            OnEnemy = onEnemy;
+        }
+    }
+
+    public class MechanicSpell
+    {
+        public int Id { get; private set; }
+
+        public bool Targeted { get; private set; }
+
+        public bool OnTank { get; private set; }
+
+        public MechanicSpell(int id, bool targeted = false, bool onTank = false)
+        {
+            Id = id;
+            Targeted = targeted;
+            OnTank = onTank;
+        }
+    }
+    #endregion
+
+    public class Main : CombatRoutine
+    {
+        #region settings
+        #region settings categories
+        #endregion
+
+        #region bool settings
+        private static readonly SettingBool[] settingsBool = { };
+        #endregion
+
+        #region strings settings
+        private static readonly SettingStrings[] settingsStrings = { };
+        #endregion
+        #endregion
+
+        #region toggles
+        private static readonly Toggle[] toggles = { };
+        #endregion
+
+        #region units
+        public static readonly Unit player = new Unit("player");
+        public static readonly Unit target = new Unit("target");
+        public static readonly Unit mouseover = new Unit("mouseover");
+        public static readonly Unit party1 = new Unit("party1");
+        public static readonly Unit party2 = new Unit("party2");
+        public static readonly Unit party3 = new Unit("party3");
+        public static readonly Unit party4 = new Unit("party4");
+        public static readonly Unit raid1 = new Unit("raid1");
+        public static readonly Unit raid2 = new Unit("raid2");
+        public static readonly Unit raid3 = new Unit("raid3");
+        public static readonly Unit raid4 = new Unit("raid4");
+        public static readonly Unit raid5 = new Unit("raid5");
+        public static readonly Unit raid6 = new Unit("raid6");
+        public static readonly Unit raid7 = new Unit("raid7");
+        public static readonly Unit raid8 = new Unit("raid8");
+        public static readonly Unit raid9 = new Unit("raid9");
+        public static readonly Unit raid10 = new Unit("raid10");
+        public static readonly Unit raid11 = new Unit("raid11");
+        public static readonly Unit raid12 = new Unit("raid12");
+        public static readonly Unit raid13 = new Unit("raid13");
+        public static readonly Unit raid14 = new Unit("raid14");
+        public static readonly Unit raid15 = new Unit("raid15");
+        public static readonly Unit raid16 = new Unit("raid16");
+        public static readonly Unit raid17 = new Unit("raid17");
+        public static readonly Unit raid18 = new Unit("raid18");
+        public static readonly Unit raid19 = new Unit("raid19");
+        public static readonly Unit raid20 = new Unit("raid20");
+        public static readonly Unit raid21 = new Unit("raid21");
+        public static readonly Unit raid22 = new Unit("raid22");
+        public static readonly Unit raid23 = new Unit("raid23");
+        public static readonly Unit raid24 = new Unit("raid24");
+        public static readonly Unit raid25 = new Unit("raid25");
+        public static readonly Unit raid26 = new Unit("raid26");
+        public static readonly Unit raid27 = new Unit("raid27");
+        public static readonly Unit raid28 = new Unit("raid28");
+        public static readonly Unit raid29 = new Unit("raid29");
+        public static readonly Unit raid30 = new Unit("raid30");
+        public static readonly Unit raid31 = new Unit("raid31");
+        public static readonly Unit raid32 = new Unit("raid32");
+        public static readonly Unit raid33 = new Unit("raid33");
+        public static readonly Unit raid34 = new Unit("raid34");
+        public static readonly Unit raid35 = new Unit("raid35");
+        public static readonly Unit raid36 = new Unit("raid36");
+        public static readonly Unit raid37 = new Unit("raid37");
+        public static readonly Unit raid38 = new Unit("raid38");
+        public static readonly Unit raid39 = new Unit("raid39");
+        public static readonly Unit raid40 = new Unit("raid40");
+        public static readonly Unit boss1 = new Unit("boss1");
+        public static readonly Unit boss2 = new Unit("boss2");
+        public static readonly Unit boss3 = new Unit("boss3");
+        public static readonly Unit boss4 = new Unit("boss4");
+        public static readonly Unit[] units = { player, party1, party2, party3, party4, raid1, raid2, raid3, raid4, raid5, raid6, raid7, raid8, raid9, raid10, raid11, raid12, raid13,
+        raid14, raid15, raid16, raid17, raid18, raid19, raid20, raid21, raid22, raid23, raid24, raid25, raid26, raid27, raid28, raid29, raid30, raid31, raid32, raid33, raid34, raid35,
+        raid36, raid37, raid38, raid39, raid40 };
+        public static readonly Unit[] enemyUnits = { target, mouseover, boss1, boss2, boss3, boss4 };
+        #endregion
+
+        #region npcs
+        public static readonly NPC explosivesNPC = new NPC(120651, true);
+        public static readonly NPC shieldGeneratorNPC = new NPC(151579, true, false);
+        public static readonly NPC[] npcs = { explosivesNPC, shieldGeneratorNPC };
+        #endregion
+
+        #region casts
+        #region spells
+        private static readonly Spell[] spells = { };
+        #endregion
+
+        #region macro functions
+        private static readonly string castFunction = "/cast ";
+        private static readonly string useFunction = "/use ";
+        #endregion
+
+        #region macro types
+        private static readonly string cursorMacro = " Cursor";
+        private static readonly string focusMacro = " Focus";
+        private static readonly string mouseoverMacro = " Mouseover";
+        private static readonly string playerMacro = " Player";
+        #endregion
+
+        #region macro modifiers
+        private static readonly string cursorModifier = "[@cursor] ";
+        private static readonly string focusModifier = "[@focus] ";
+        private static readonly string mouseoverModifier = "[@mouseover] ";
+        private static readonly string playerModifier = "[@player] ";
+        #endregion
+
+        #region macros
+        private static readonly Macro stopCastMacro = new Macro("Stop Cast Macro", "/stopcasting");
+        private static readonly Macro[] macros = { stopCastMacro };
+        #endregion
+
+        #region items
+        private static readonly Item cosmicHealingPotionItem = new Item(187802, "Cosmic Healing Potion");
+        private static readonly Item[] items = { cosmicHealingPotionItem };
+        #endregion
+
+        #region trinkets
+        private static readonly Trinket trinket1 = new Trinket(1);
+        private static readonly Trinket trinket2 = new Trinket(2);
+        private static readonly Trinket[] trinkets = { trinket1, trinket2 };
+        #endregion
+        #endregion
+
+        #region auras
+        #region buffs
+        public static readonly Buff[] buffs = { };
+        #endregion
+
+        #region debuffs
+        public static readonly Debuff[] debuffs = { };
+        #endregion
+        #endregion
+
+        #region mechanics + spells
+        #region spells
+        #endregion
+
+        #region mechanics
+        public static readonly Mechanic[] mechanics = { };
+        #endregion
+        #endregion        
+
+        private static long GetTime()
+        {
+            return DateTime.Now.Ticks / TimeSpan.TicksPerMillisecond;
+        }
+
+        public override void Initialize()
+        {
+            isHealingRotationFocus = true;
+
+            isAutoBindReady = true;
+
+            SetPriorityTargetsRange(40);
+
+            AddSpell("Auto Attack", 6603);
+
+            foreach (SettingBool setting in settingsBool) AddProp(setting.Id, setting.DisplayName, setting.DefaultValue, setting.Description, setting.Category.Name);
+
+            foreach (SettingStrings setting in settingsStrings) AddProp(setting.Id, setting.DisplayName, setting.Values, setting.Description, setting.Category.Name);
+
+            foreach (Toggle toggle in toggles) AddToggle(toggle.Name);
+
+            foreach (NPC npc in npcs) if (npc.Priority) AddPriorityTarget(npc.Id);
+
+            foreach (Spell spell in spells) { AddSpell(spell.Name, spell.Id); AddMacro(spell.Name + focusMacro, "D1", "None", "None", castFunction + focusModifier + spell.Name); };
+
+            foreach (Macro macro in macros) AddMacro(macro.Name, "D1", "None", "None", macro.Text);
+
+            foreach (Item item in items) AddItem(item.Name, item.Id);
+
+            foreach (Trinket trinket in trinkets) AddMacro(trinket.Name, "D1", "None", "None", useFunction + (trinket.Id + 12));
+
+            foreach (Buff buff in buffs) AddBuff(buff.Name, buff.Id);
+
+            foreach (Debuff debuff in debuffs) AddDebuff(debuff.Name, debuff.Id);
+        }
+
+        public override void Pulse()
+        {
+            if (API.PlayerIsMounted) return;
+        }
+
+        public override void CombatPulse() { }
+
+        public override void OutOfCombatPulse() { }
+    }
+}
